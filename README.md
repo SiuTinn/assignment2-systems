@@ -56,6 +56,7 @@ Python 3.12.10 (main, Apr  9 2025, 04:03:51) [Clang 20.1.0 ] on linux
 ```
 
 `uv run` installs dependencies automatically as dictated in the `pyproject.toml` file.
+` .\venv\Scripts\activate.bat ` activates uv environment
 
 ## Submitting
 
