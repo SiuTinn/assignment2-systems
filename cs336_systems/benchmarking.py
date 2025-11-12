@@ -8,9 +8,13 @@ configurable hyperparameters and timing options.
 import argparse
 import timeit
 from typing import Literal
+from pathlib import Path
+from datetime import datetime
+import json
 
 import torch
 import torch.nn as nn
+import pandas as pd
 from cs336_basics.model import BasicsTransformerLM
 from cs336_basics.optimizer import AdamW
 
@@ -158,29 +162,137 @@ def run_benchmark(
     return results
 
 
+def save_benchmark_report(
+    config: dict,
+    results: dict,
+    num_params: int,
+    output_dir: str = "output/benchmarks"
+) -> None:
+    """
+    Save benchmark results to a Markdown table.
+    
+    Args:
+        config: Dictionary of model and benchmark configuration
+        results: Dictionary of benchmark results
+        num_params: Total number of model parameters
+        output_dir: Directory to save the report
+    """
+    # Create output directory if it doesn't exist
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    # Prepare data for the report
+    report_data = {
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'vocab_size': config['vocab_size'],
+        'context_length': config['context_length'],
+        'd_model': config['d_model'],
+        'num_layers': config['num_layers'],
+        'num_heads': config['num_heads'],
+        'd_ff': config['d_ff'],
+        'rope_theta': config['rope_theta'],
+        'batch_size': config['batch_size'],
+        'mode': config['mode'],
+        'device': config['device'],
+        'total_params_M': num_params / 1e6,
+        'mean_time_s': results['mean_time'],
+        'median_time_s': results['median_time'],
+        'std_time_s': results['std_time'],
+        'min_time_s': results['min_time'],
+        'max_time_s': results['max_time'],
+        'steps_per_sec': 1 / results['mean_time'],
+        'tokens_per_step': config['batch_size'] * config['context_length'],
+        'tokens_per_sec': (config['batch_size'] * config['context_length']) / results['mean_time'],
+    }
+    
+    # Add GPU memory info if available
+    if config['device'] == 'cuda' and torch.cuda.is_available():
+        report_data['gpu_allocated_GB'] = torch.cuda.memory_allocated() / 1e9
+        report_data['gpu_reserved_GB'] = torch.cuda.memory_reserved() / 1e9
+        report_data['gpu_max_allocated_GB'] = torch.cuda.max_memory_allocated() / 1e9
+    
+    # Load existing results if file exists
+    results_file = output_path / 'benchmark_results.csv'
+    markdown_file = output_path / 'benchmark_results.md'
+    
+    if results_file.exists():
+        df = pd.read_csv(results_file)
+        df = pd.concat([df, pd.DataFrame([report_data])], ignore_index=True)
+    else:
+        df = pd.DataFrame([report_data])
+    
+    # Save to CSV
+    df.to_csv(results_file, index=False)
+    print(f"\n✓ Results saved to {results_file}")
+    
+    # Save to Markdown
+    markdown_content = "# Benchmark Results\n\n"
+    markdown_content += f"*Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n\n"
+    markdown_content += "## Summary Table\n\n"
+    
+    # Format the dataframe for better readability
+    df_display = df.copy()
+    
+    # Round numeric columns
+    numeric_cols = ['total_params_M', 'mean_time_s', 'median_time_s', 'std_time_s', 
+                    'min_time_s', 'max_time_s', 'steps_per_sec', 'tokens_per_sec']
+    for col in numeric_cols:
+        if col in df_display.columns:
+            df_display[col] = df_display[col].round(4)
+    
+    if 'gpu_allocated_GB' in df_display.columns:
+        df_display['gpu_allocated_GB'] = df_display['gpu_allocated_GB'].round(3)
+        df_display['gpu_reserved_GB'] = df_display['gpu_reserved_GB'].round(3)
+        df_display['gpu_max_allocated_GB'] = df_display['gpu_max_allocated_GB'].round(3)
+    
+    markdown_content += df_display.to_markdown(index=False)
+    markdown_content += "\n\n## Notes\n\n"
+    markdown_content += "- `mean_time_s`: Average time per step in seconds\n"
+    markdown_content += "- `tokens_per_sec`: Throughput in tokens per second\n"
+    markdown_content += "- `total_params_M`: Total model parameters in millions\n"
+    markdown_content += "- `gpu_*_GB`: GPU memory usage in gigabytes\n"
+    
+    with open(markdown_file, 'w') as f:
+        f.write(markdown_content)
+    
+    print(f"✓ Markdown report saved to {markdown_file}")
+    
+    # Save individual run details
+    run_detail_file = output_path / f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(run_detail_file, 'w') as f:
+        json.dump({
+            'config': config,
+            'results': results,
+            'num_params': num_params,
+            'report_data': report_data
+        }, f, indent=2)
+    
+    print(f"✓ Detailed run info saved to {run_detail_file}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Benchmark Transformer model forward and backward passes"
     )
     
     # Model hyperparameters
-    parser.add_argument("--vocab-size", type=int, default=50257,
+    parser.add_argument("--vocab-size", type=int, default=10000,
                         help="Vocabulary size")
-    parser.add_argument("--context-length", type=int, default=1024,
+    parser.add_argument("--context-length", type=int, default=256,
                         help="Maximum context length")
-    parser.add_argument("--d-model", type=int, default=768,
+    parser.add_argument("--d-model", type=int, default=512,
                         help="Model dimension")
-    parser.add_argument("--num-layers", type=int, default=12,
+    parser.add_argument("--num-layers", type=int, default=4,
                         help="Number of transformer layers")
-    parser.add_argument("--num-heads", type=int, default=12,
+    parser.add_argument("--num-heads", type=int, default=16,
                         help="Number of attention heads")
-    parser.add_argument("--d-ff", type=int, default=3072,
+    parser.add_argument("--d-ff", type=int, default=1344,
                         help="Feed-forward dimension")
     parser.add_argument("--rope-theta", type=float, default=10000.0,
                         help="RoPE theta parameter")
     
     # Benchmarking parameters
-    parser.add_argument("--batch-size", type=int, default=8,
+    parser.add_argument("--batch-size", type=int, default=4,
                         help="Batch size for benchmarking")
     parser.add_argument("--warmup-steps", type=int, default=5,
                         help="Number of warmup steps before timing")
@@ -194,6 +306,10 @@ def main():
                         help="Device to run benchmarking on")
     parser.add_argument("--learning-rate", type=float, default=3e-4,
                         help="Learning rate for optimizer (used in forward_backward mode)")
+    parser.add_argument("--output-dir", type=str, default="output/benchmarks",
+                        help="Directory to save benchmark reports")
+    parser.add_argument("--no-save", action="store_true",
+                        help="Skip saving results to file")
     
     args = parser.parse_args()
     
@@ -287,6 +403,22 @@ def main():
         print(f"  Max allocated: {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")
     
     print("=" * 80)
+    
+    # Save benchmark report
+    if not args.no_save:
+        config_dict = {
+            'vocab_size': args.vocab_size,
+            'context_length': args.context_length,
+            'd_model': args.d_model,
+            'num_layers': args.num_layers,
+            'num_heads': args.num_heads,
+            'd_ff': args.d_ff,
+            'rope_theta': args.rope_theta,
+            'batch_size': args.batch_size,
+            'mode': args.mode,
+            'device': args.device,
+        }
+        save_benchmark_report(config_dict, results, num_params, args.output_dir)
 
 
 if __name__ == "__main__":
